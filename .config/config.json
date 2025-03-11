@@ -1,0 +1,10 @@
+{
+    "IRRADIATIONS": "/res/input/irradiations.xlsx",
+    "DIR_FOIL_REPORTS": "M:\\_Staff folders\\RE22\\02_Data\\05_IP2\\01_IP2_plus\\01_Raw_data\\05_Foils\\02_Reports",
+    "DIR_XS_DATA": "/res/monitor_xs",
+    "DIR_EFF": "/res/efficiency_cal",
+    "PROTON_BEAM": "/res/input/proton_beam.xlsx",
+    "GL_FILEPATH": "/res/input/gamma_lines.xlsx",
+    "MATERIALS_DATA": "/res/input/materials.xlsx",
+    "RESULTS": "/res/results"
+}
