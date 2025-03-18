@@ -168,7 +168,7 @@ def get_energy_out(transmit):
 
     '''
     
-    if transmit._output_data.atom_energy.size:
+    if transmit._output_data.atom_energy.size <= 0:
         energy_out = None
         err_energy_out = None
         
