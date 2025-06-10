@@ -5,7 +5,7 @@ from setuptools import setup, find_packages
 setup(
     name='monitor-xs-ip2',
     version='0.1',
-    packages=find_packages(where='src', include=['python']),
+    packages=find_packages(where='src'),
     author='Edoardo Renaldin',
     author_email='edoardo.renaldin@gmail.com',
     package_dir={"": "src"},

@@ -6,12 +6,13 @@ import os
 from math import log
 from datetime import datetime as dt
 import json
+from typing import Tuple
 
 #%% Constants
 
 #%% Time difference function
 
-def time_difference(date_hour_in, date_hour_end):
+def time_difference(date_hour_in: str, date_hour_end: str) -> float:
     '''
     Function that calculates the elapsed time between two dates and respective hours
 
@@ -47,21 +48,21 @@ def time_difference(date_hour_in, date_hour_end):
 
 #%% Function to calculate decay constant and its error
 
-def get_lambda_err(hf,err_hf,uom):
-    '''
-    Conversion of half-life and its error into decay constant and its error
+def get_lambda_err(hf: float, err_hf: float, uom: str) -> Tuple[float, float]:
+    """Converts the half-life to decay constant in s^-1.
 
-    Parameters
-    ----------
-    var : list
-        [Halflive or its error, string of u.o.m.].
+    Args:
+        hf (float): half-life.
+        err_hf (float): error of half-life.
+        uom (str): unit of measure of half-life.
 
-    Returns
-    -------
-    float
-        Decay constant.
+    Raises:
+        ValueError: wrong unit of measure
 
-    '''
+    Returns:
+        tuple: (decay constant, error of decay constant)
+    """
+    
     if uom == "s":
         tmp_hf = hf
         tmp_err_hf = err_hf
@@ -77,6 +78,8 @@ def get_lambda_err(hf,err_hf,uom):
     elif uom == "y":
         tmp_hf = hf * 60 * 60 * 24 * 365
         tmp_err_hf = err_hf * 60 * 60 * 24 * 365
+    else:
+        raise ValueError('No unit of measure for the half-life.')
         
     Lambda = log(2) / tmp_hf
     err_Lambda = Lambda**2 * tmp_err_hf / log(2)
@@ -85,11 +88,14 @@ def get_lambda_err(hf,err_hf,uom):
 
 #%% Load configuration JSON file
 
-def load_config():
+def load_config() -> dict:
     ''' Load configuration JSON file '''
     
+    # Root directory
+    root_directory = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+    
     # Define the path to the configuration file located in the .config folder
-    config_file = os.path.join(os.path.dirname(__file__), '..', '.config', 'config.json')
+    config_file = os.path.join(root_directory, '.config', 'config.json')
      
     # Ensure the config file exists before attempting to open it
     if not os.path.isfile(config_file):
