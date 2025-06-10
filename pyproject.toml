@@ -1,5 +1,5 @@
 [project]
-name = "monitor-xs-ip2_renaldinE"
+name = "monitor-xs-ip2"
 version = "0.1"
 authors = [
   { name = "Edoardo Renaldin", email = "edoardo.renaldin@gmail.com" }
@@ -16,8 +16,7 @@ classifiers = [
     "Intended Audience :: Scientists",
     "Topic :: Nuclear Physics :: Monitor Cross Section",
     "Programming Language :: Python :: 3",
-    "Operating System :: OS Independent",
-    "License :: OSI Approved :: MIT License"
+    "Operating System :: OS Independent"
 ]
 dependencies = [
     "pandas",

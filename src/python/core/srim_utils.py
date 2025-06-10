@@ -49,6 +49,8 @@ class Transmit():
                 'layer_name': match.group(4),
                 'layer_thickness': (float(match.group(5)), match.group(6)) # (absolute value, unit of measure)
                 }
+        else:
+            raise ValueError("")
             
         return out_dict
     

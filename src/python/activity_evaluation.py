@@ -70,8 +70,6 @@ def evaluate_eob_activity(
     # Convert foil thickness from micrometer to centimeter
     foil_thickness_conv = foil_thickness * uM_TO_CM
     
-    # Evaluate EoB activity
-    act_eob = f_xs(energy) * MBARN_TO_CM2 * current_conv * N_AVO * density * foil_thickness_conv * (1-np.exp(-lambda_ * t_irr)) / (Q * Z * mol_weight)
-    
-    return act_eob
+    # Evaluate EoB activity    
+    return f_xs(energy) * MBARN_TO_CM2 * current_conv * N_AVO * density * foil_thickness_conv * (1-np.exp(-lambda_ * t_irr)) / (Q * Z * mol_weight)
     
