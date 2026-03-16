@@ -3,7 +3,7 @@
 import numpy as np
 import pandas as pd
 from os import listdir
-from os.path import isfile,join
+from os.path import isfile, join
 import subprocess
 
 #%% Custom packages
@@ -19,7 +19,7 @@ config = load_config()
 
 #%% Target class
 
-class Target():
+class Target:
     ''' Model an irradiated target bombarded with either protons or neutrons '''
     
     def __init__(
@@ -77,6 +77,7 @@ class Target():
         self.target_thick: float = tar_thick
         self.enr: float = enr
         self.degrader: str = degrader
+        self.proton_current: float = current
         self.t_irr: float = time_difference(self.irr_start, self.irr_end)
         
         # Proton beam characteristics derived from BDSIM simulations
@@ -95,12 +96,17 @@ class Target():
         # Load radionuclides present in a specific target material
         df_nuc_inventory = pd.read_excel(config['MATERIALS_DATA'], sheet_name='Material_NuclideInventory')
         df_mol_weights = pd.read_excel(config['MATERIALS_DATA'], sheet_name='MolecularWeights')
+        if tar_mat not in df_nuc_inventory.columns:
+            raise ValueError(f"Target material '{tar_mat}' not found in Material_NuclideInventory sheet.")
         
         # Define molecular weight of target material
-        self.mol_weight = df_mol_weights['mol_weight'][df_mol_weights['material'] == self.target_material].iloc[0]
+        mat_row = df_mol_weights[df_mol_weights['material'] == self.target_material]
+        if mat_row.empty:
+            raise ValueError(f"Target material '{self.target_material}' not found in MolecularWeights sheet.")
+        self.mol_weight = mat_row['mol_weight'].iloc[0]
         
         # Define target material density
-        self.density = df_mol_weights['density'][df_mol_weights['material'] == self.target_material].iloc[0]
+        self.density = mat_row['density'].iloc[0]
 
         # Initialize radionuclide list
         self.radionuclides = RadionuclideList(
@@ -114,13 +120,13 @@ class Target():
                         df.half_life,
                         df.err_half_life,
                         df.uom,
-                        df.selected_g_line) if nuc in df_nuc_inventory[tar_mat].to_list()
+                        df.selected_g_line) if nuc in df_nuc_inventory[tar_mat].dropna().to_list()
                 ]
             )
         
         # Load the gamma lines of each radionuclide
         for nuc in self.radionuclides:
-            gamma_lines = pd.read_excel(config['GL_FILEPATH'],sheet_name=nuc.name)
+            gamma_lines = pd.read_excel(config['GL_FILEPATH'], sheet_name=nuc.name)
             self.radionuclides[nuc].g_energies = gamma_lines.energy.to_numpy()
             self.radionuclides[nuc].intensities = gamma_lines.intensity.to_numpy()
             self.radionuclides[nuc].err_intensities = gamma_lines.err_intensity.to_numpy()
@@ -164,7 +170,7 @@ class Target():
             else:
                 raise ValueError(f"{software} is not 'Genie2K' or 'InterWinner'.")
             
-            if self.target_id == report.tar_id:
+            if str(self.target_id).lower() == str(report.tar_id).lower():
                 self.measurements.append(
                     Measurement(
                         report.datetime_meas,
@@ -197,11 +203,20 @@ class Target():
 
         '''
         
+        # Reset previously computed values to make repeated calls deterministic.
+        for r in self.radionuclides:
+            self.radionuclides[r].act_eob = []
+            self.radionuclides[r].err_act_eob = []
+
         # Store only valid EoB activity results in the radionuclide list of Target class
         for m in self.measurements:
             for r in m.radionuclides:
-                self.radionuclides[r].act_eob.append(float(r.act_eob[r.g_energies == r.g_line]))
-                self.radionuclides[r].err_act_eob.append(float(r.err_act_eob[r.g_energies == r.g_line]))
+                if r.g_energies is None or len(r.g_energies) == 0:
+                    continue
+
+                idx = int(np.argmin(np.abs(np.asarray(r.g_energies) - r.g_line)))
+                self.radionuclides[r].act_eob.append(float(r.act_eob[idx]))
+                self.radionuclides[r].err_act_eob.append(float(r.err_act_eob[idx]))
         
         for r in self.radionuclides:
             self.radionuclides[r].act_eob = np.array(self.radionuclides[r].act_eob)
@@ -218,11 +233,17 @@ class Target():
                 self.radionuclides[r].err_mean_act_eob = r.err_act_eob[0]
             else:
                 # Calculate the weights = inverse of error squared
-                weights = 1 / r.err_act_eob**2
+                valid = r.err_act_eob > 0
+                if not np.any(valid):
+                    # fallback to simple mean when all errors are null/invalid
+                    self.radionuclides[r].mean_act_eob = float(np.mean(r.act_eob))
+                    self.radionuclides[r].err_mean_act_eob = 0.0
+                    continue
+                weights = 1 / r.err_act_eob[valid] ** 2
                 
                 # Perform weighted average of the EoB activities
                 self.radionuclides[r].mean_act_eob = np.average(
-                    r.act_eob,
+                    r.act_eob[valid],
                     weights=weights
                     )
                 
@@ -239,12 +260,14 @@ class Target():
 
         '''
         
-        proton_beam = ProtonBeam(self.degrader, self.mass)
+        proton_beam = ProtonBeam(self.degrader)
         corr_factor = self.proton_current / 50
+        if corr_factor == 0:
+            raise ValueError("Cannot calculate thin-target yield with zero proton current.")
         
-        for i,nuclide in enumerate(self.radionuclides):
-            self.radionuclides[i].thin_target_yield = nuclide.mean_act_eob / ( corr_factor * proton_beam.current )
-            self.radionuclides[i].err_thin_target_yield = nuclide.err_mean_act_eob / ( corr_factor * proton_beam.current )
+        for i, nuclide in enumerate(self.radionuclides):
+            self.radionuclides[i].thin_target_yield = nuclide.mean_act_eob / (corr_factor * proton_beam.current)
+            self.radionuclides[i].err_thin_target_yield = nuclide.err_mean_act_eob / (corr_factor * proton_beam.current)
                 
     def __str__(self):
         return f"Target: {self.target_id} -> {self.target_material} ({self.degrader})."
@@ -252,29 +275,22 @@ class Target():
     def __repr__(self):
         return f"Target: ('{self.target_material}', '{self.degrader}', '{self.target_id}')"
         
-    def __eq__(self,tar_id_to_test):
-        if tar_id_to_test == self.target_id:
-            return True
-        else:
-            return False
+    def __eq__(self, tar_id_to_test):
+        if isinstance(tar_id_to_test, Target):
+            return tar_id_to_test.target_id == self.target_id
+        if isinstance(tar_id_to_test, str):
+            return tar_id_to_test == self.target_id
+        return NotImplemented
 
 class TargetList(list):
     def __init__(self, list_):
         # Check whether the input is a list
-        if isinstance(list_,list):
-            # Check whether all the list items are of GammaMeasurement type
-            ck = True
-            for i in list_:
-                if not isinstance(i,Target):
-                    ck = False
-                    break
-                
-            if ck:
-                super().__init__(list_)
-            else:
-                raise ValueError(f"Item {i} is not of Target type.")
-        else:
+        if not isinstance(list_, list):
             raise ValueError(f"Input {list_} is not a list.")
+        invalid_item = next((i for i in list_ if not isinstance(i, Target)), None)
+        if invalid_item is not None:
+            raise ValueError(f"Item {invalid_item} is not of Target type.")
+        super().__init__(list_)
             
     def get_acquisition_data(self, dir_reports: str, software: str):
         '''
@@ -298,7 +314,7 @@ class TargetList(list):
             target.load_measurements(dir_reports, software)
             
             for i, _ in enumerate(target.measurements):
-                self[target].measurements[i].calculate_cooling_time(target.irr_end)
+                target.measurements[i].calculate_cooling_time(target.irr_end)
     
     def calculate_activities(self):
         ''' Calculate measured activity and EoB activity '''
@@ -306,7 +322,7 @@ class TargetList(list):
             for i, m in enumerate(t.measurements):
                 for r in m.radionuclides:
                     # Calculate activity at the beginning of acquisition
-                    self[t].measurements[i].radionuclides[r].calculate_activity(
+                    t.measurements[i].radionuclides[r].calculate_activity(
                         m.level,
                         m.detector,
                         m.real_time,
@@ -314,19 +330,19 @@ class TargetList(list):
                         )
                     
                     # Calculate EoB activity
-                    self[t].measurements[i].radionuclides[r].calculate_eob_act(m.t_cool)
+                    t.measurements[i].radionuclides[r].calculate_eob_act(m.t_cool)
     
     def calculate_mean_activities(self):
         ''' Evaluate mean activities for each target and radionuclide '''
         
         for t in self:
-            self[t].calculate_mean_act_eob()
+            t.calculate_mean_act_eob()
             
     def evaluate_eob_activites(self):
         
         for t in self:
             for r in t.radionuclides:
-                self[t].radionuclides[r].act_eob_eval = evaluate_eob_activity(
+                t.radionuclides[r].act_eob_eval = evaluate_eob_activity(
                     r.name,
                     t.energy,
                     t.t_irr,
@@ -354,7 +370,7 @@ class TargetList(list):
     
     def __getitem__(self, key):
         # In case I have a string
-        if isinstance(key,str) | isinstance(key,Target):
+        if isinstance(key, str) or isinstance(key, Target):
             for item in self:
                 if item == key:
                     return item

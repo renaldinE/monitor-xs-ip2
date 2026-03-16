@@ -2,7 +2,6 @@
 
 import numpy as np
 import pandas as pd
-from typing import List
 from datetime import datetime as dt
 
 #%% Custom packages
@@ -18,12 +17,11 @@ def get_datetime_meas(measurement):
     ''' Function to help sorting the measurements list '''
     if isinstance(measurement, Measurement):
         return dt.strptime(measurement.meas_date, "%Y-%m-%d %H:%M:%S")
-    else:
-        raise TypeError(f'{measurement} is not a Measurement class.')
+    raise TypeError(f'{measurement} is not a Measurement class.')
 
 #%% Measurement class
 
-class Measurement():
+class Measurement:
     ''' Model a spectrometry measurement '''
     
     def __init__(
@@ -61,12 +59,17 @@ class Measurement():
 
         '''
 
+        # Validate date format early to fail fast on malformed reports.
+        dt.strptime(meas_date, "%Y-%m-%d %H:%M:%S")
+
         self.meas_date: str = meas_date
         self.level: str = level
         self.live_time: float = live_time
         self.real_time: float = real_time
         self.detector: str = detector
         self.target_id: str = tar_id
+        self.t_cool: float = 0.0
+        self.err_t_cool: float = 0.0
         
         # Check file existence before proceeding
         try:
@@ -78,6 +81,8 @@ class Measurement():
             
         # Load radionuclides present in a specific target material
         df_nuc_inventory = pd.read_excel(config['MATERIALS_DATA'], sheet_name='Material_NuclideInventory')
+        if tar_mat not in df_nuc_inventory.columns:
+            raise ValueError(f"Target material '{tar_mat}' not found in Material_NuclideInventory sheet.")
         
         # Initialize radionuclide list
         self.radionuclides = RadionuclideList(
@@ -105,10 +110,10 @@ class Measurement():
             except FileNotFoundError:
                 raise FileNotFoundError(f"Gamma line data for {radionuclide.name} not found in the Excel file.")
             except Exception as e:
-                raise Exception(f"Error reading gamma line data for {radionuclide.name}: {str(e)}")
+                raise RuntimeError(f"Error reading gamma line data for {radionuclide.name}: {str(e)}") from e
             
     
-    def calculate_cooling_time(self,datetime_irr_end):
+    def calculate_cooling_time(self, datetime_irr_end):
         '''
         Calculates the cooling time.
 
@@ -123,7 +128,7 @@ class Measurement():
 
         '''
         self.t_cool = time_difference(datetime_irr_end, self.meas_date)
-        self.err_t_cool = 2 # (s)
+        self.err_t_cool = 2  # (s)
     
     def get_net_counts(self, report):
         '''
@@ -140,57 +145,46 @@ class Measurement():
 
         '''
         
-        for r in self.radionuclides: # go through the radionuclide list
-            for Ey_s in r.g_energies: # go through the selected gamma lines for each radionuclide
-                ck_Ey_s_found = False # to know if the gamma line was found or not
-                
-                # To store only the net counts of the detected peak closest to the gamma line
-                net_counts_matches = np.array([])
-                err_net_counts_matches = np.array([])
-                deviations = np.array([])
-                
-                for Ey_m,net_counts,err_net_counts in zip(report.energy,
-                                                          report.net_counts,
-                                                          report.err_net_counts):
-                    if (Ey_m < Ey_s + 1.) and ( Ey_m > Ey_s - 1.): # ck if the measured gamma line is among one of the selected
-                        
-                        net_counts_matches = np.append(net_counts_matches, net_counts)
-                        err_net_counts_matches = np.append(err_net_counts_matches, err_net_counts)
-                        deviations = np.append(deviations, abs(Ey_m - Ey_s) )
-                        
-                        ck_Ey_s_found = True
-                
-                if len(deviations) == 1:
-                    self.radionuclides[r].net_counts.append( net_counts_matches[0] )
-                    self.radionuclides[r].err_net_counts.append( err_net_counts_matches[0] )
-                elif len(deviations) > 1:
-                    self.radionuclides[r].net_counts.append( float(net_counts_matches[ deviations == deviations.min() ] ) )
-                    self.radionuclides[r].err_net_counts.append( float(err_net_counts_matches[ deviations == deviations.min() ] ) )
-                    
-                if not ck_Ey_s_found: # in case not found, append a Null activity
-                    self.radionuclides[r].net_counts.append( 0.0 )
-                    self.radionuclides[r].err_net_counts.append( 0.0 )
-        
-            # Convert net counts into numpy array
-            self.radionuclides[r].net_counts = np.array(self.radionuclides[r].net_counts)
-            self.radionuclides[r].err_net_counts = np.array(self.radionuclides[r].err_net_counts)
+        report_energy = np.asarray(report.energy, dtype=float)
+        report_counts = np.asarray(report.net_counts, dtype=float)
+        report_err_counts = np.asarray(report.err_net_counts, dtype=float)
+
+        if not (report_energy.size == report_counts.size == report_err_counts.size):
+            raise ValueError("Report arrays energy/net_counts/err_net_counts must have the same length.")
+
+        for r in self.radionuclides:  # go through the radionuclide list
+            matched_counts = []
+            matched_err_counts = []
+
+            for Ey_s in r.g_energies:  # go through selected gamma lines
+                mask = np.abs(report_energy - Ey_s) < 1.0
+                if not np.any(mask):
+                    matched_counts.append(0.0)
+                    matched_err_counts.append(0.0)
+                    continue
+
+                candidate_idx = np.where(mask)[0]
+                closest_local_idx = np.argmin(np.abs(report_energy[candidate_idx] - Ey_s))
+                idx = candidate_idx[closest_local_idx]
+
+                matched_counts.append(float(report_counts[idx]))
+                matched_err_counts.append(float(report_err_counts[idx]))
+
+            self.radionuclides[r].net_counts = np.asarray(matched_counts, dtype=float)
+            self.radionuclides[r].err_net_counts = np.asarray(matched_err_counts, dtype=float)
     
-    def __eq__(self,datetime_to_compare):
+    def __eq__(self, datetime_to_compare):
         # Check wether 'datetime_to_compare' is of type datetime.datetime
         if isinstance(datetime_to_compare, dt):
-            datetime_meas = dt.strptime(self.datetime_meas,"%Y-%m-%d %H:%M:%S")
-            if datetime_to_compare == datetime_meas:
-                return True
-            else:
-                return False
-        elif isinstance(datetime_to_compare, str):
-            datetime_meas = dt.strptime(self.datetime_meas,"%Y-%m-%d %H:%M:%S")
-            datetime_to_compare_dt = dt.strptime(datetime_to_compare,"%Y-%m-%d %H:%M:%S")
+            datetime_meas = dt.strptime(self.meas_date, "%Y-%m-%d %H:%M:%S")
+            return datetime_to_compare == datetime_meas
 
-            if datetime_to_compare_dt == datetime_meas:
-                return True
-            else:
-                return False
+        if isinstance(datetime_to_compare, str):
+            datetime_meas = dt.strptime(self.meas_date, "%Y-%m-%d %H:%M:%S")
+            datetime_to_compare_dt = dt.strptime(datetime_to_compare, "%Y-%m-%d %H:%M:%S")
+            return datetime_to_compare_dt == datetime_meas
+
+        return NotImplemented
     
     def __str__(self):
         return f"Measurement of {self.meas_date} (Target: {self.target_id})."
@@ -203,13 +197,14 @@ class Measurement():
 class MeasurementList(list):
     def __init__(self, list_):
         # Check whether the input is a list
-        if isinstance(list_, list):
-            # Check whether all the list items are of Measurement type
-            if not all(isinstance(i, Measurement) for i in list_):
-                raise ValueError("All items in the list must be of Measurement type.")
-            super().__init__(list_)
-        else:
+        if not isinstance(list_, list):
             raise ValueError(f"Input {list_} is not a list.")
+
+        # Check whether all the list items are of Measurement type
+        if not all(isinstance(i, Measurement) for i in list_):
+            raise ValueError("All items in the list must be of Measurement type.")
+
+        super().__init__(list_)
 
     def append(self, item):
         if isinstance(item, Measurement):

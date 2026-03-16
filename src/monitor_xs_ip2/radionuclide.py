@@ -1,7 +1,7 @@
 #%% Relevant packages
 
 import numpy as np
-from typing import List
+from typing import Iterable, List
 from periodictable import elements
 
 #%% Custom packages
@@ -11,7 +11,7 @@ from .core.utils import get_lambda_err
 
 #%% Radionuclide and RadionuclideList classes
 
-class Radionuclide():
+class Radionuclide:
     def __init__(
         self,
         name: str,
@@ -48,9 +48,9 @@ class Radionuclide():
         self.Lambda, self.err_Lambda = get_lambda_err(half_life, err_half_life, uom)
         
         # Define later on in script
-        self.g_energies: List[float] = [] # gamma lineS energy
-        self.intensities: List[float] = [] # intensity of gamma lineS
-        self.err_intensities: List[float] = [] # error of intensity of gamma lineS
+        self.g_energies: List[float] = []  # selected gamma-line energies
+        self.intensities: List[float] = []  # gamma-line intensities
+        self.err_intensities: List[float] = []  # errors of gamma-line intensities
         
         # ***** Additional variables *****
         # Initialization - Used only by Measurements
@@ -63,7 +63,7 @@ class Radionuclide():
         
         # Also used by Target.calculate_mean_act_eob() to store the non-zero
         # EoB activities of the main gamma line
-        self.act_eob: List[float] = [] # End-of-bombardment activity
+        self.act_eob: List[float] = []  # End-of-bombardment activity
         self.err_act_eob: List[float] = []
         
         # Initialization - Used only by Targets
@@ -74,7 +74,7 @@ class Radionuclide():
         self.thin_target_yield = 0
         self.err_thin_target_yield = 0
     
-    def calculate_activity(self,level,detector,real_time,live_time):
+    def calculate_activity(self, level, detector, real_time, live_time):
         '''
         Calculates the measured activity and its associated error.
 
@@ -96,49 +96,66 @@ class Radionuclide():
         None.
 
         '''
+        if real_time <= 0 or live_time <= 0:
+            raise ValueError("real_time and live_time must be positive.")
+
         err_real_time = err_live_time = 0.0
         
         # Correction factor due to dead time
         C_dt = real_time / live_time
-        err_C_dt = C_dt * np.sqrt( (err_live_time / live_time)**2 + (err_real_time / real_time)**2 )
+        err_C_dt = C_dt * np.sqrt((err_live_time / live_time) ** 2 + (err_real_time / real_time) ** 2)
         
         # Correction factor due to radioactive decay of the source
-        C_meas = self.Lambda / (1 - np.exp(-self.Lambda * real_time))
-        temp = (1 - np.exp( -self.Lambda * real_time ) * (1 + self.Lambda * real_time ) )
-        err_C_meas = temp / (1 - np.exp(-self.Lambda * real_time))**2 * self.err_Lambda
+        one_minus_exp = 1 - np.exp(-self.Lambda * real_time)
+        C_meas = self.Lambda / one_minus_exp
+        temp = 1 - np.exp(-self.Lambda * real_time) * (1 + self.Lambda * real_time)
+        err_C_meas = temp / (one_minus_exp ** 2) * self.err_Lambda
         
         # Efficiency calculation as a function of the gamma lines energy
+        if len(self.g_energies) == 0:
+            raise ValueError(f"No gamma-line energies are loaded for radionuclide '{self.name}'.")
+
         eff, err_eff = zip(*[efficiency_fun(Ey, level, detector) for Ey in self.g_energies])
+        eff = np.asarray(eff, dtype=float)
+        err_eff = np.asarray(err_eff, dtype=float)
+        net_counts = np.asarray(self.net_counts, dtype=float)
+        err_net_counts = np.asarray(self.err_net_counts, dtype=float)
+        intensities = np.asarray(self.intensities, dtype=float) / 100
+        err_intensities = np.asarray(self.err_intensities, dtype=float) / 100
         
         # Activity calculation
-        self.act = C_dt * C_meas * self.net_counts / (eff * self.intensities / 100 )
+        with np.errstate(divide="ignore", invalid="ignore"):
+            self.act = C_dt * C_meas * net_counts / (eff * intensities)
+        self.act = np.nan_to_num(self.act, nan=0.0, posinf=0.0, neginf=0.0)
         
         # Calculation of the error of activity
         numerator = np.array([
-            self.err_net_counts,
-            err_eff, 
-            self.err_intensities / 100
+            err_net_counts,
+            err_eff,
+            err_intensities,
             ])
         
         denominator = np.array([
-            self.net_counts,
+            net_counts,
             eff,
-            self.intensities / 100
+            intensities
             ])
         
         # Error calculation for the 1D arrays
-        error_contrib = np.sum((numerator / denominator) ** 2, axis=0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            error_contrib = np.sum((numerator / denominator) ** 2, axis=0)
+        error_contrib = np.nan_to_num(error_contrib, nan=0.0, posinf=0.0, neginf=0.0)
         
         # Add the contributions from the scalar terms
-        error_contrib += (err_C_dt / C_dt) ** 2 + (err_C_meas / C_meas ) ** 2
+        error_contrib += (err_C_dt / C_dt) ** 2 + (err_C_meas / C_meas) ** 2
         
         # Calculate the final error
         self.err_act = np.sqrt(error_contrib) * self.act
         
         # Handle NaN values
-        self.err_act = np.nan_to_num(self.err_act, nan=0.0)
-    
-    def calculate_eob_act(self,t_cool):
+        self.err_act = np.nan_to_num(self.err_act, nan=0.0, posinf=0.0, neginf=0.0)
+
+    def calculate_eob_act(self, t_cool):
         '''
         Calculates the end-of-bombardment activity
 
@@ -154,22 +171,27 @@ class Radionuclide():
         '''
         
         # Correction due to cooling time
+        if t_cool is None:
+            raise ValueError("t_cool cannot be None.")
+
         C_cool = np.exp(self.Lambda * t_cool)
         err_C_cool = t_cool * C_cool * self.err_Lambda
 
         # Calculate the end-of-bombardment activity
-        self.act_eob = self.act * C_cool
+        act = np.asarray(self.act, dtype=float)
+        err_act = np.asarray(self.err_act, dtype=float)
+        self.act_eob = act * C_cool
         
         # Pre-allocate error array
         self.err_act_eob = np.zeros_like(self.act_eob)
 
         # Calculate the error for each element
-        non_zero_mask = self.act != 0  # Only calculate error for non-zero activity
+        non_zero_mask = act != 0  # Only calculate error for non-zero activity
 
         # Compute error only where activity is non-zero
         self.err_act_eob[non_zero_mask] = np.sqrt(
-            (self.err_act[non_zero_mask] / self.act[non_zero_mask])**2 + 
-            (err_C_cool / C_cool)**2
+            (err_act[non_zero_mask] / act[non_zero_mask]) ** 2 +
+            (err_C_cool / C_cool) ** 2
         ) * self.act_eob[non_zero_mask]
         
         # For zero activity, the error remains zero
@@ -180,8 +202,7 @@ class Radionuclide():
             return other == self.name
         elif isinstance(other, Radionuclide):
             return other.name == self.name
-        else:
-            raise TypeError(f"'{other}' is not a string or a Radionuclide object.")
+        return NotImplemented
     
     def __str__(self):
         return f"Radionuclide: {self.name} ({self.half_life} {self.uom})."
@@ -193,15 +214,14 @@ class Radionuclide():
 class RadionuclideList(list):
     def __init__(self, list_):
         # Check whether the input is a list
-        if isinstance(list_,list):
-            for i in list_:
-                if not isinstance(i,Radionuclide):
-                    raise ValueError(f"Item {i} is not of Radionuclide type.")
-                
-            super().__init__(list_)
-                
-        else:
+        if not isinstance(list_, list):
             raise ValueError(f"Input {list_} is not a list.")
+
+        invalid_item = next((i for i in list_ if not isinstance(i, Radionuclide)), None)
+        if invalid_item is not None:
+            raise ValueError(f"Item {invalid_item} is not of Radionuclide type.")
+
+        super().__init__(list_)
     
     def append(self, item):
         if isinstance(item, Radionuclide):
@@ -229,8 +249,8 @@ class RadionuclideList(list):
     def get_element_No(isotope):
         return elements.symbol(isotope.name.split('-')[0]).number
     
-    def sort_elements(self,reverse=False):
-        self.sort(key=self.get_element_No,reverse=reverse)
+    def sort_elements(self, reverse=False):
+        self.sort(key=self.get_element_No, reverse=reverse)
     
     def __getitem__(self, key):
         # In case I have a string

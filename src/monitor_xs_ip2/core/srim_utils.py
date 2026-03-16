@@ -91,7 +91,7 @@ class Transmit():
 
 #%% Run srim
 
-def run_pysrim(energy: float, layers: list, number_ions: int, srim_executable_directory_user=None):
+def run_pysrim(energy: float, layers: list, number_ions: int, srim_executable_directory_user=None) -> Transmit:
     '''
     
 
@@ -129,14 +129,14 @@ def run_pysrim(energy: float, layers: list, number_ions: int, srim_executable_di
     # Initialize a TRIM calculation
     trim = TRIM(target, ion, number_ions=number_ions, calculation=1,transmit=True) 
     
-    if not srim_executable_directory_user:
+    if srim_executable_directory_user:
+        srim_directory = srim_executable_directory_user
+    else:
         # Get absolute path to the "Documents" folder
         if os.name == 'nt':  # For Windows
             srim_directory = Path(os.environ['USERPROFILE']) / 'Documents' / 'SRIM-2013'
         else:  # For Linux/macOS
             srim_directory = Path.home() / 'Documents' / 'SRIM-2013'
-    else:
-        srim_directory = srim_executable_directory_user
     
     # Check if the SRIM directory exists and raise an error if not
     if not os.path.isdir(srim_directory):
